@@ -1,2 +1,2 @@
 # OS-Simulator
-simulates algorithms found in various operating systems
+simulates fundamental algorithms found in various operating systems

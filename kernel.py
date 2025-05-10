@@ -14,8 +14,9 @@ PID = int
 class PCB:
     pid: PID
 
-    def __init__(self, pid: PID):
+    def __init__(self, pid: PID, priority=float('inf')):
         self.pid = pid
+        self.priority = priority
 
 # This class represents the Kernel of the simulation.
 # The simulator will create an instance of this object and use it to respond to syscalls and interrupts.
@@ -42,11 +43,20 @@ class Kernel:
     # priority is the priority of new_process.
     # DO NOT rename or delete this method. DO NOT change its arguments.
     def new_process_arrived(self, new_process: PID, priority: int) -> PID:
+        if self.scheduling_algorithm == "Priority":
+            if self.running.priority <= priority:
+                self.ready_queue.append(PCB(new_process, priority))
+            else:
+                #preempt current process and start executing the higher priority process (smaller priority number)
+                self.ready_queue.append(self.running)
+                self.running = PCB(new_process, priority)
+                
         return self.running.pid
 
     # This method is triggered every time the current process performs an exit syscall.
     # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_exit(self) -> PID:
+        self.running = self.choose_next_process()
         return self.running.pid
 
     # This method is triggered when the currently running process requests to change its priority.
@@ -60,12 +70,12 @@ class Kernel:
     # Feel free to modify this method as you see fit.
     # It is not required to actually use this method but it is recommended.
     def choose_next_process(self):
-        if len(self.ready_queue) == 0:
-                return self.idle_pcb
-        
+        if not self.ready_queue:
+            return self.idle_pcb
         if self.scheduling_algorithm == "FCFS":
-            self.running = self.idle_pcb
+            return self.ready_queue.popleft()
         elif self.scheduling_algorithm == "Priority":
-            self.running = self.idle_pcb
+            self.ready_queue = deque(sorted(self.ready_queue, key=lambda x: x.priority))
+            return self.ready_queue.popleft()
         
-
+        return self.idle_pcb

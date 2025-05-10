@@ -1,6 +1,6 @@
 ### Fill in the following information before submitting
 # Group id: 
-# Members: 
+# Members: Jordan Finn, Mohammad Mirzaei, Maitreyi Sinha
 
 
 

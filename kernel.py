@@ -3,7 +3,6 @@
 # Members: Jordan Finn, Mohammad Mirzaei, Maitreyi Sinha
 
 
-
 from collections import deque
 
 # PID is just an integer, but it is used to make it clear when a integer is expected to be a valid PID.
@@ -51,11 +50,21 @@ class Kernel:
                 self.ready_queue.append(self.running)
                 self.running = PCB(new_process, priority)
                 
+        if self.scheduling_algorithm == "FCFS":
+            #If the currently running process is not the idle process, let the currently running process keep running
+            #and add the new_process to the ready queue. 
+            if self.running is not self.idle_pcb:
+                self.ready_queue.append(PCB(new_process))
+            #Otherwise, set the running process to the new_process.
+            else:
+                self.running = PCB(new_process)
+
         return self.running.pid
 
     # This method is triggered every time the current process performs an exit syscall.
     # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_exit(self) -> PID:
+        #As long as the queue still has a process waiting, check which scheduling algorithm we're using, and run that process.
         self.running = self.choose_next_process()
         return self.running.pid
 
@@ -72,6 +81,7 @@ class Kernel:
     def choose_next_process(self):
         if not self.ready_queue:
             return self.idle_pcb
+        
         if self.scheduling_algorithm == "FCFS":
             return self.ready_queue.popleft()
         elif self.scheduling_algorithm == "Priority":
@@ -79,3 +89,5 @@ class Kernel:
             return self.ready_queue.popleft()
         
         return self.idle_pcb
+        
+

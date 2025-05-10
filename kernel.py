@@ -70,13 +70,13 @@ class Kernel:
     # Feel free to modify this method as you see fit.
     # It is not required to actually use this method but it is recommended.
     def choose_next_process(self):
-        if len(self.ready_queue) == 0:
+        if not self.ready_queue:
                 return self.idle_pcb
         
         if self.scheduling_algorithm == "FCFS":
-            self.running = self.ready_queue.popleft()
+            return self.ready_queue.popleft()
         elif self.scheduling_algorithm == "Priority":
             self.running = self.idle_pcb
 
-        return self.running
+        return self.idle_pcb
 

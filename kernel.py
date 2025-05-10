@@ -56,13 +56,7 @@ class Kernel:
     # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_exit(self) -> PID:
         #As long as the queue still has a process waiting, check which scheduling algorithm we're using, and run that process.
-        if len(self.ready_queue) > 0:
-            if (self.scheduling_algorithm == "FCFS"):
-                self.running = self.ready_queue.popleft()
-        #Otherwise, run the idle process.
-        else:
-            self.running = self.idle_pcb
-
+        self.running = self.choose_next_process()
         return self.running.pid
 
     # This method is triggered when the currently running process requests to change its priority.
@@ -80,8 +74,9 @@ class Kernel:
                 return self.idle_pcb
         
         if self.scheduling_algorithm == "FCFS":
-            self.running = self.idle_pcb
+            self.running = self.ready_queue.popleft()
         elif self.scheduling_algorithm == "Priority":
             self.running = self.idle_pcb
-        
+
+        return self.running
 

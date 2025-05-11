@@ -71,6 +71,12 @@ class Kernel:
     # This method is triggered when the currently running process requests to change its priority.
     # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_set_priority(self, new_priority: int) -> PID:
+        self.running.priority = new_priority
+        if self.scheduling_algorithm == "Priority":
+            if self.ready_queue and any(process.priority < self.running.priority for process in self.ready_queue):
+                self.ready_queue.append(self.running)
+                self.ready_queue = deque(sorted(self.ready_queue, key=lambda x: x.priority))
+                self.running = self.ready_queue.popleft()
         return self.running.pid
 
 

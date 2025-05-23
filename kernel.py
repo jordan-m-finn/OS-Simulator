@@ -30,7 +30,7 @@ class Kernel:
     # Called before the simulation begins.
     # Use this method to initilize any variables you need throughout the simulation.
     # DO NOT rename or delete this method. DO NOT change its arguments.
-    def __init__(self, scheduling_algorithm: str):
+    def __init__(self, scheduling_algorithm: str, logger):
         self.scheduling_algorithm = scheduling_algorithm
         self.ready_queue = deque()
         self.waiting_queue = deque()
@@ -41,7 +41,7 @@ class Kernel:
     # new_process is this process's PID.
     # priority is the priority of new_process.
     # DO NOT rename or delete this method. DO NOT change its arguments.
-    def new_process_arrived(self, new_process: PID, priority: int) -> PID:
+    def new_process_arrived(self, new_process: PID, priority: int, process_type: str) -> PID:
         if self.scheduling_algorithm == "Priority":
             if self.running.priority <= priority:
                 self.ready_queue.append(PCB(new_process, priority))
@@ -96,4 +96,40 @@ class Kernel:
         
         return self.idle_pcb
         
+    # This method is triggered when the currently running process requests to initialize a new semaphore.
+	# DO NOT rename or delete this method. DO NOT change its arguments.
+	def syscall_init_semaphore(self, semaphore_id: int, initial_value: int):
+        return
+    
+	# This method is triggered when the currently running process calls p() on an existing semaphore.
+	# DO NOT rename or delete this method. DO NOT change its arguments.
+	def syscall_semaphore_p(self, semaphore_id: int) -> PID:
+        return self.running.pid
 
+	# This method is triggered when the currently running process calls v() on an existing semaphore.
+	# DO NOT rename or delete this method. DO NOT change its arguments.
+	def syscall_semaphore_v(self, semaphore_id: int) -> PID:
+        return self.running.pid
+
+	# This method is triggered when the currently running process requests to initialize a new mutex.
+	# DO NOT rename or delete this method. DO NOT change its arguments.
+	def syscall_init_mutex(self, mutex_id: int):
+        return
+
+	# This method is triggered when the currently running process calls lock() on an existing mutex.
+	# DO NOT rename or delete this method. DO NOT change its arguments.
+	def syscall_mutex_lock(self, mutex_id: int) -> PID:
+        return self.running.pid
+
+
+	# This method is triggered when the currently running process calls unlock() on an existing mutex.
+	# DO NOT rename or delete this method. DO NOT change its arguments.
+	def syscall_mutex_unlock(self, mutex_id: int) -> PID:
+        return self.running.pid
+
+	# This function represents the hardware timer interrupt.
+	# It is triggered every 10 microseconds and is the only way a kernel can track passing time.
+	# Do not use real time to track how much time has passed as time is simulated.
+	# DO NOT rename or delete this method. DO NOT change its arguments.
+	def timer_interrupt(self) -> PID:
+        return self.running.pid

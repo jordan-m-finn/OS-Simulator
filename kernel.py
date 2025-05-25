@@ -16,6 +16,9 @@ class PCB:
     def __init__(self, pid: PID, priority=float('inf')):
         self.pid = pid
         self.priority = priority
+        # Add a field to track if the process is blocked by a mutex or semaphore
+        self.blocked_by = None  # Will store the ID of the mutex/semaphore blocking this process
+        self.blocked_type = None  # Will store 'mutex' or 'semaphore'
 
 # This class represents the Kernel of the simulation.
 # The simulator will create an instance of this object and use it to respond to syscalls and interrupts.
@@ -36,6 +39,16 @@ class Kernel:
         self.waiting_queue = deque()
         self.idle_pcb = PCB(0)
         self.running = self.idle_pcb
+        self.logger = logger
+        
+        # Initialize data structures for mutexes and semaphores
+        self.mutexes = {}  # Dictionary to store mutex information: {mutex_id: {'locked': bool, 'owner': PID, 'waiting': deque}}
+        self.semaphores = {}  # Dictionary to store semaphore information: {semaphore_id: {'value': int, 'waiting': deque}}
+        
+        # For Round Robin scheduling
+        self.time_quantum = 40  # 40 microseconds time quantum
+        self.current_time = 0  # Track current time for RR scheduling
+        self.process_start_time = 0  # Track when the current process started running
 
     # This method is triggered every time a new process has arrived.
     # new_process is this process's PID.
@@ -51,7 +64,7 @@ class Kernel:
                 self.ready_queue.append(self.running)
                 self.running = PCB(new_process, priority)
                 
-        if self.scheduling_algorithm == "FCFS":
+        elif self.scheduling_algorithm == "FCFS":
             #If the currently running process is not the idle process, let the currently running process keep running
             #and add the new_process to the ready queue. 
             if self.running is not self.idle_pcb:
@@ -59,6 +72,15 @@ class Kernel:
             #Otherwise, set the running process to the new_process.
             else:
                 self.running = PCB(new_process)
+        
+        elif self.scheduling_algorithm == "RR":
+            # For Round Robin, if no process is running (idle), run the new process
+            if self.running is self.idle_pcb:
+                self.running = PCB(new_process, priority)
+                self.process_start_time = self.current_time
+            else:
+                # Otherwise, add the new process to the ready queue
+                self.ready_queue.append(PCB(new_process, priority))
 
         return self.running.pid
 
@@ -67,6 +89,8 @@ class Kernel:
     def syscall_exit(self) -> PID:
         #As long as the queue still has a process waiting, check which scheduling algorithm we're using, and run that process.
         self.running = self.choose_next_process()
+        if self.scheduling_algorithm == "RR":
+            self.process_start_time = self.current_time
         return self.running.pid
 
     # This method is triggered when the currently running process requests to change its priority.
@@ -94,43 +118,161 @@ class Kernel:
         elif self.scheduling_algorithm == "Priority":
             self.ready_queue = deque(sorted(self.ready_queue, key=lambda x: x.priority))
             return self.ready_queue.popleft()
+        elif self.scheduling_algorithm == "RR":
+            # For Round Robin, simply take the next process from the ready queue
+            return self.ready_queue.popleft()
         
         return self.idle_pcb
-        
+    
+    # The following are new methods that the simulator will call for the new simulations (i.e. for project 1). 
+    # You will notice that some of them do not return a PID and thus can not cause a context switch.
+
     # This method is triggered when the currently running process requests to initialize a new semaphore.
-	# DO NOT rename or delete this method. DO NOT change its arguments.
+    # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_init_semaphore(self, semaphore_id: int, initial_value: int):
+        # Initialize a new semaphore with the given ID and initial value
+        self.semaphores[semaphore_id] = {
+            'value': initial_value,
+            'waiting': deque()  # Queue of processes waiting on this semaphore
+        }
         return
     
-	# This method is triggered when the currently running process calls p() on an existing semaphore.
-	# DO NOT rename or delete this method. DO NOT change its arguments.
+    # This method is triggered when the currently running process calls p() on an existing semaphore.
+    # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_semaphore_p(self, semaphore_id: int) -> PID:
+        # Decrement the semaphore value
+        self.semaphores[semaphore_id]['value'] -= 1
+        
+        # If the semaphore value is negative, block the process
+        if self.semaphores[semaphore_id]['value'] < 0:
+            # Save the current process
+            current_process = self.running
+            current_process.blocked_by = semaphore_id
+            current_process.blocked_type = 'semaphore'
+            
+            # Add the process to the semaphore's waiting queue
+            self.semaphores[semaphore_id]['waiting'].append(current_process)
+            
+            # Choose the next process to run
+            self.running = self.choose_next_process()
+            if self.scheduling_algorithm == "RR":
+                self.process_start_time = self.current_time
+        
         return self.running.pid
 
-	# This method is triggered when the currently running process calls v() on an existing semaphore.
-	# DO NOT rename or delete this method. DO NOT change its arguments.
+    # This method is triggered when the currently running process calls v() on an existing semaphore.
+    # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_semaphore_v(self, semaphore_id: int) -> PID:
+        # Increment the semaphore value
+        self.semaphores[semaphore_id]['value'] += 1
+        
+        # If there are processes waiting on this semaphore, unblock one
+        if self.semaphores[semaphore_id]['value'] <= 0 and self.semaphores[semaphore_id]['waiting']:
+            # For FCFS and RR, release the process with the lowest PID
+            if self.scheduling_algorithm in ["FCFS", "RR"]:
+                # Sort the waiting queue by PID
+                waiting_queue = sorted(self.semaphores[semaphore_id]['waiting'], key=lambda x: x.pid)
+                process_to_release = waiting_queue[0]
+                
+                # Remove the process from the semaphore's waiting queue
+                self.semaphores[semaphore_id]['waiting'].remove(process_to_release)
+                
+                # Clear the blocked status
+                process_to_release.blocked_by = None
+                process_to_release.blocked_type = None
+                
+                # Add the process to the ready queue
+                self.ready_queue.append(process_to_release)
+        
         return self.running.pid
 
-	# This method is triggered when the currently running process requests to initialize a new mutex.
-	# DO NOT rename or delete this method. DO NOT change its arguments.
+    # This method is triggered when the currently running process requests to initialize a new mutex.
+    # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_init_mutex(self, mutex_id: int):
+        # Initialize a new mutex with the given ID
+        self.mutexes[mutex_id] = {
+            'locked': False,
+            'owner': None,
+            'waiting': deque()  # Queue of processes waiting on this mutex
+        }
         return
 
-	# This method is triggered when the currently running process calls lock() on an existing mutex.
-	# DO NOT rename or delete this method. DO NOT change its arguments.
+    # This method is triggered when the currently running process calls lock() on an existing mutex.
+    # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_mutex_lock(self, mutex_id: int) -> PID:
+        # If the mutex is not locked, lock it and set the owner
+        if not self.mutexes[mutex_id]['locked']:
+            self.mutexes[mutex_id]['locked'] = True
+            self.mutexes[mutex_id]['owner'] = self.running.pid
+        else:
+            # If the mutex is already locked, block the process
+            current_process = self.running
+            current_process.blocked_by = mutex_id
+            current_process.blocked_type = 'mutex'
+            
+            # Add the process to the mutex's waiting queue
+            self.mutexes[mutex_id]['waiting'].append(current_process)
+            
+            # Choose the next process to run
+            self.running = self.choose_next_process()
+            if self.scheduling_algorithm == "RR":
+                self.process_start_time = self.current_time
+        
         return self.running.pid
 
-
-	# This method is triggered when the currently running process calls unlock() on an existing mutex.
-	# DO NOT rename or delete this method. DO NOT change its arguments.
+    # This method is triggered when the currently running process calls unlock() on an existing mutex.
+    # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_mutex_unlock(self, mutex_id: int) -> PID:
+        # Only the owner can unlock the mutex
+        if self.mutexes[mutex_id]['owner'] == self.running.pid:
+            # If there are processes waiting on this mutex, unblock one
+            if self.mutexes[mutex_id]['waiting']:
+                # For FCFS and RR, release the process with the lowest PID
+                if self.scheduling_algorithm in ["FCFS", "RR"]:
+                    # Sort the waiting queue by PID
+                    waiting_queue = sorted(self.mutexes[mutex_id]['waiting'], key=lambda x: x.pid)
+                    process_to_release = waiting_queue[0]
+                    
+                    # Remove the process from the mutex's waiting queue
+                    self.mutexes[mutex_id]['waiting'].remove(process_to_release)
+                    
+                    # Clear the blocked status
+                    process_to_release.blocked_by = None
+                    process_to_release.blocked_type = None
+                    
+                    # Set the new owner of the mutex
+                    self.mutexes[mutex_id]['owner'] = process_to_release.pid
+                    
+                    # Add the process to the ready queue
+                    self.ready_queue.append(process_to_release)
+            else:
+                # If no processes are waiting, unlock the mutex
+                self.mutexes[mutex_id]['locked'] = False
+                self.mutexes[mutex_id]['owner'] = None
+        
         return self.running.pid
 
-	# This function represents the hardware timer interrupt.
-	# It is triggered every 10 microseconds and is the only way a kernel can track passing time.
-	# Do not use real time to track how much time has passed as time is simulated.
-	# DO NOT rename or delete this method. DO NOT change its arguments.
+    # This function represents the hardware timer interrupt.
+    # It is triggered every 10 microseconds and is the only way a kernel can track passing time.
+    # Do not use real time to track how much time has passed as time is simulated.
+    # DO NOT rename or delete this method. DO NOT change its arguments.
     def timer_interrupt(self) -> PID:
+        # Update the current time
+        self.current_time += 10  # Timer interrupt occurs every 10 microseconds
+        
+        # For Round Robin scheduling, check if the current process has used its time quantum
+        if self.scheduling_algorithm == "RR" and self.running is not self.idle_pcb:
+            time_used = self.current_time - self.process_start_time
+            
+            # If the process has used its time quantum, preempt it
+            if time_used >= self.time_quantum:
+                # Add the current process to the ready queue
+                self.ready_queue.append(self.running)
+                
+                # Choose the next process to run
+                self.running = self.choose_next_process()
+                
+                # Reset the process start time
+                self.process_start_time = self.current_time
+        
         return self.running.pid

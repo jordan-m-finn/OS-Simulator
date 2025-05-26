@@ -13,12 +13,13 @@ PID = int
 class PCB:
     pid: PID
 
-    def __init__(self, pid: PID, priority=float('inf')):
+    def __init__(self, pid: PID, priority=float('inf'), process_type="Foreground"):
         self.pid = pid
         self.priority = priority
         # Add a field to track if the process is blocked by a mutex or semaphore
         self.blocked_by = None  # Will store the ID of the mutex/semaphore blocking this process
         self.blocked_type = None  # Will store 'mutex' or 'semaphore'
+        self.process_type = process_type
 
 # This class represents the Kernel of the simulation.
 # The simulator will create an instance of this object and use it to respond to syscalls and interrupts.
@@ -50,47 +51,91 @@ class Kernel:
         self.current_time = 0  # Track current time for RR scheduling
         self.process_start_time = 0  # Track when the current process started running
 
+        #multi-level scheduling
+        self.foreground_queue = deque() #RR
+        self.background_queue = deque() #FCFS
+        self.current_level= None
+        self.level_timer = 0
+
+        self.pcbs= {}
+
     # This method is triggered every time a new process has arrived.
     # new_process is this process's PID.
     # priority is the priority of new_process.
     # DO NOT rename or delete this method. DO NOT change its arguments.
     #process_type is either foreground or background
     def new_process_arrived(self, new_process: PID, priority: int, process_type: str) -> PID:
+        pcb = PCB(new_process, priority=priority, process_type=process_type)
+        self.pcbs[new_process] = pcb
+        if self.scheduling_algorithm=="Multilevel":
+            if process_type == "Foreground":
+                #uses RR scheduling algorithm
+                if self.running is self.idle_pcb:
+                    self.running = pcb
+                    self.current_level = ("Foreground" if self.current_level == None else self.current_level)
+                    self.process_start_time = self.current_time
+                    return pcb.pid
+                else:
+                    self.foreground_queue.append(pcb)
+                    print("Self.running.pid is returned: ", self.running.pid)
+                    return self.running.pid
+            else:
+                if self.running is self.idle_pcb:
+                    self.running = pcb
+                    self.process_start_time = self.current_time
+                    self.current_level = ("Background" if self.current_level == None else self.current_level)
+                    return pcb.pid
+                else:
+                    self.background_queue.append(pcb)
+                    return self.running.pid
+                
         if self.scheduling_algorithm == "Priority":
             if self.running.priority <= priority:
-                self.ready_queue.append(PCB(new_process, priority))
+                self.ready_queue.append(pcb)
             else:
                 #preempt current process and start executing the higher priority process (smaller priority number)
                 self.ready_queue.append(self.running)
-                self.running = PCB(new_process, priority)
+                self.running = pcb
                 
         elif self.scheduling_algorithm == "FCFS":
             #If the currently running process is not the idle process, let the currently running process keep running
             #and add the new_process to the ready queue. 
             if self.running is not self.idle_pcb:
-                self.ready_queue.append(PCB(new_process))
+                self.ready_queue.append(pcb)
             #Otherwise, set the running process to the new_process.
             else:
-                self.running = PCB(new_process)
+                self.running = pcb
         
         elif self.scheduling_algorithm == "RR":
             # For Round Robin, if no process is running (idle), run the new process
             if self.running is self.idle_pcb:
-                self.running = PCB(new_process, priority)
+                self.running = pcb
                 self.process_start_time = self.current_time
             else:
                 # Otherwise, add the new process to the ready queue
-                self.ready_queue.append(PCB(new_process, priority))
+                self.ready_queue.append(pcb)
 
         return self.running.pid
 
     # This method is triggered every time the current process performs an exit syscall.
     # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_exit(self) -> PID:
-        #As long as the queue still has a process waiting, check which scheduling algorithm we're using, and run that process.
+        exited = self.running
+        self.running = self.idle_pcb
+
+        # Clean up: remove exited process from any queues just in case
+        if exited in self.foreground_queue:
+            self.foreground_queue.remove(exited)
+        if exited in self.background_queue:
+            self.background_queue.remove(exited)
+        if exited in self.ready_queue:
+            self.ready_queue.remove(exited)
+
         self.running = self.choose_next_process()
-        if self.scheduling_algorithm == "RR":
+        if self.scheduling_algorithm == "RR" or self.scheduling_algorithm == "Multilevel":
             self.process_start_time = self.current_time
+
+
         return self.running.pid
 
     # This method is triggered when the currently running process requests to change its priority.
@@ -110,19 +155,28 @@ class Kernel:
     # Feel free to modify this method as you see fit.
     # It is not required to actually use this method but it is recommended.
     def choose_next_process(self):
-        if not self.ready_queue:
-            return self.idle_pcb
-        
-        if self.scheduling_algorithm == "FCFS":
+        if self.scheduling_algorithm == "Multilevel":
+            if self.current_level == "Foreground":
+                if len(self.foreground_queue) > 0:
+                    return self.foreground_queue.popleft()
+                elif len(self.background_queue) > 0:
+                    return self.background_queue.popleft()
+            else:  # current_level == "Background"
+                if len(self.background_queue) > 0:
+                    print("Choosing background process now: ", self.background_queue)
+                    return self.background_queue.popleft()
+                elif len(self.foreground_queue) > 0:
+                    return self.foreground_queue.popleft()
+        elif self.scheduling_algorithm == "FCFS" and self.ready_queue:
             return self.ready_queue.popleft()
-        elif self.scheduling_algorithm == "Priority":
+        elif self.scheduling_algorithm == "Priority" and self.ready_queue:
             self.ready_queue = deque(sorted(self.ready_queue, key=lambda x: x.priority))
             return self.ready_queue.popleft()
-        elif self.scheduling_algorithm == "RR":
+        elif self.scheduling_algorithm == "RR" and self.ready_queue:
             # For Round Robin, simply take the next process from the ready queue
             return self.ready_queue.popleft()
-        
-        return self.idle_pcb
+
+        return self.running
     
     # The following are new methods that the simulator will call for the new simulations (i.e. for project 1). 
     # You will notice that some of them do not return a PID and thus can not cause a context switch.
@@ -181,8 +235,14 @@ class Kernel:
                 process_to_release.blocked_by = None
                 process_to_release.blocked_type = None
                 
-                # Add the process to the ready queue
-                self.ready_queue.append(process_to_release)
+                # Add the process to the ready queue if not multilevel
+                if self.scheduling_algorithm == "Multilevel":
+                    if process_to_release.process_type == "Foreground":
+                        self.foreground_queue.append(process_to_release)
+                    else:
+                        self.background_queue.append(process_to_release)
+                else:
+                    self.ready_queue.append(process_to_release)
         
         return self.running.pid
 
@@ -243,8 +303,14 @@ class Kernel:
                     # Set the new owner of the mutex
                     self.mutexes[mutex_id]['owner'] = process_to_release.pid
                     
-                    # Add the process to the ready queue
-                    self.ready_queue.append(process_to_release)
+                    # Add the process to the ready queue if not multilevel
+                    if self.scheduling_algorithm == "Multilevel":
+                        if process_to_release.process_type == "Foreground":
+                            self.foreground_queue.append(process_to_release)
+                        else:
+                            self.background_queue.append(process_to_release)
+                    else:
+                        self.ready_queue.append(process_to_release)
             else:
                 # If no processes are waiting, unlock the mutex
                 self.mutexes[mutex_id]['locked'] = False
@@ -274,5 +340,33 @@ class Kernel:
                 
                 # Reset the process start time
                 self.process_start_time = self.current_time
-        
+        if self.scheduling_algorithm == "Multilevel":
+            time_used = self.current_time - self.process_start_time
+            self.level_timer += 10
+            # 1. Handle level switching
+            if self.level_timer >= 200:
+                if self.current_level == "Foreground" and self.background_queue:
+                    if self.running is not self.idle_pcb:
+                        self.foreground_queue.append(self.running)
+                    self.current_level = "Background"
+                    self.running = self.choose_next_process()
+                    self.process_start_time = self.current_time
+
+                elif self.current_level == "Background" and self.foreground_queue:   
+                    if self.running is not self.idle_pcb:
+                        print("Preempting background process: ", self.running.pid, " time slot: ", self.level_timer)
+                        self.background_queue.appendleft(self.running)
+                    self.current_level = "Foreground"
+                    self.running = self.choose_next_process()
+                    self.process_start_time = self.current_time
+                    time_used = 0
+
+                self.level_timer = 0  # recommit to current level
+
+            # 2. Handle RR preemption inside foreground
+            if self.current_level == "Foreground" and time_used >= self.time_quantum and self.running.process_type == "Foreground":
+                print("Preempting current process: ", self.running.pid, " time_used: ", time_used, " level time: ", self.level_timer)
+                self.foreground_queue.append(self.running)
+                self.running = self.choose_next_process()       
+                self.process_start_time = self.current_time
         return self.running.pid

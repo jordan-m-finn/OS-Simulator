@@ -20,6 +20,7 @@ class PCB:
         self.blocked_by = None  # Will store the ID of the mutex/semaphore blocking this process
         self.blocked_type = None  # Will store 'mutex' or 'semaphore'
         self.process_type = process_type
+        self.remaining_quantum = 40 if process_type == "Foreground" else None
 
 # This class represents the Kernel of the simulation.
 # The simulator will create an instance of this object and use it to respond to syscalls and interrupts.
@@ -71,8 +72,10 @@ class Kernel:
             if process_type == "Foreground":
                 #uses RR scheduling algorithm
                 if self.running is self.idle_pcb:
+                    if self.current_level != process_type:
+                        self.level_timer = 0
                     self.running = pcb
-                    self.current_level = ("Foreground" if self.current_level == None else self.current_level)
+                    self.current_level = process_type
                     self.process_start_time = self.current_time
                     return pcb.pid
                 else:
@@ -81,9 +84,11 @@ class Kernel:
                     return self.running.pid
             else:
                 if self.running is self.idle_pcb:
+                    if self.current_level != process_type:
+                        self.level_timer = 0
                     self.running = pcb
                     self.process_start_time = self.current_time
-                    self.current_level = ("Background" if self.current_level == None else self.current_level)
+                    self.current_level = process_type
                     return pcb.pid
                 else:
                     self.background_queue.append(pcb)
@@ -159,13 +164,17 @@ class Kernel:
             if self.current_level == "Foreground":
                 if len(self.foreground_queue) > 0:
                     return self.foreground_queue.popleft()
-                elif len(self.background_queue) > 0:
+                elif len(self.background_queue) >0:
+                    self.current_level = "Background"
+                    self.level_timer = 0
                     return self.background_queue.popleft()
             else:  # current_level == "Background"
                 if len(self.background_queue) > 0:
-                    print("Choosing background process now: ", self.background_queue)
+                    #print("Choosing background process now: ", self.background_queue)
                     return self.background_queue.popleft()
                 elif len(self.foreground_queue) > 0:
+                    self.current_level = "Foreground"
+                    self.level_timer = 0
                     return self.foreground_queue.popleft()
         elif self.scheduling_algorithm == "FCFS" and self.ready_queue:
             return self.ready_queue.popleft()
@@ -235,14 +244,8 @@ class Kernel:
                 process_to_release.blocked_by = None
                 process_to_release.blocked_type = None
                 
-                # Add the process to the ready queue if not multilevel
-                if self.scheduling_algorithm == "Multilevel":
-                    if process_to_release.process_type == "Foreground":
-                        self.foreground_queue.append(process_to_release)
-                    else:
-                        self.background_queue.append(process_to_release)
-                else:
-                    self.ready_queue.append(process_to_release)
+               
+                self.ready_queue.append(process_to_release)
         
         return self.running.pid
 
@@ -303,14 +306,8 @@ class Kernel:
                     # Set the new owner of the mutex
                     self.mutexes[mutex_id]['owner'] = process_to_release.pid
                     
-                    # Add the process to the ready queue if not multilevel
-                    if self.scheduling_algorithm == "Multilevel":
-                        if process_to_release.process_type == "Foreground":
-                            self.foreground_queue.append(process_to_release)
-                        else:
-                            self.background_queue.append(process_to_release)
-                    else:
-                        self.ready_queue.append(process_to_release)
+                    # Add the process to the ready queue 
+                    self.ready_queue.append(process_to_release)
             else:
                 # If no processes are waiting, unlock the mutex
                 self.mutexes[mutex_id]['locked'] = False
@@ -325,7 +322,7 @@ class Kernel:
     def timer_interrupt(self) -> PID:
         # Update the current time
         self.current_time += 10  # Timer interrupt occurs every 10 microseconds
-        
+        #self.logger.log("Timer interrupt")
         # For Round Robin scheduling, check if the current process has used its time quantum
         if self.scheduling_algorithm == "RR" and self.running is not self.idle_pcb:
             time_used = self.current_time - self.process_start_time
@@ -341,20 +338,28 @@ class Kernel:
                 # Reset the process start time
                 self.process_start_time = self.current_time
         if self.scheduling_algorithm == "Multilevel":
+            if self.running.process_type == "Foreground":
+                self.running.remaining_quantum -=10
             time_used = self.current_time - self.process_start_time
             self.level_timer += 10
             # 1. Handle level switching
             if self.level_timer >= 200:
-                if self.current_level == "Foreground" and self.background_queue:
+                #self.logger.log("200ms has passed -- timer interrupt, switch levels")
+                if self.current_level == "Foreground" and len(self.background_queue) > 0:
                     if self.running is not self.idle_pcb:
-                        self.foreground_queue.append(self.running)
+                        #self.logger.log(f"Remainig quantum for current fg process: {self.running.pid} and time left: {self.running.remaining_quantum}")
+                        if self.running.remaining_quantum > 0:
+                            self.foreground_queue.appendleft(self.running)
+                        else:
+                            self.running.remaining_quantum = 40 #reset quantum
+                            self.foreground_queue.append(self.running)
                     self.current_level = "Background"
-                    self.running = self.choose_next_process()
+                    self.running = self.choose_next_process() 
                     self.process_start_time = self.current_time
 
-                elif self.current_level == "Background" and self.foreground_queue:   
+                elif self.current_level == "Background" and len(self.foreground_queue) > 0:   
                     if self.running is not self.idle_pcb:
-                        print("Preempting background process: ", self.running.pid, " time slot: ", self.level_timer)
+                        #self.logger.log(f"Preempting background process: f{self.running.pid} time slot: {self.level_timer}")
                         self.background_queue.appendleft(self.running)
                     self.current_level = "Foreground"
                     self.running = self.choose_next_process()
@@ -364,9 +369,10 @@ class Kernel:
                 self.level_timer = 0  # recommit to current level
 
             # 2. Handle RR preemption inside foreground
-            if self.current_level == "Foreground" and time_used >= self.time_quantum and self.running.process_type == "Foreground":
-                print("Preempting current process: ", self.running.pid, " time_used: ", time_used, " level time: ", self.level_timer)
+            if self.current_level == "Foreground" and self.running.remaining_quantum <= 0 and self.running.process_type == "Foreground" :
+                #self.logger.log(f"Preempting current process: {self.running.pid}  time_used: {time_used} level time: {self.level_timer}")
+                self.running.remaining_quantum = 40  
                 self.foreground_queue.append(self.running)
-                self.running = self.choose_next_process()       
+                self.running = self.choose_next_process()
                 self.process_start_time = self.current_time
         return self.running.pid

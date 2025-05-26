@@ -136,6 +136,14 @@ class Kernel:
         if exited in self.ready_queue:
             self.ready_queue.remove(exited)
 
+        # Clean up: remove all semaphore and mutex waiting queues
+        for sem in self.semaphores.values():
+            if exited in sem['waiting']:
+                sem['waiting'].remove(exited)
+        for mutex in self.mutexes.values():
+            if exited in mutex['waiting']:
+                mutex['waiting'].remove(exited)
+
         self.running = self.choose_next_process()
         if self.scheduling_algorithm == "RR" or self.scheduling_algorithm == "Multilevel":
             self.process_start_time = self.current_time
@@ -228,25 +236,32 @@ class Kernel:
     def syscall_semaphore_v(self, semaphore_id: int) -> PID:
         # Increment the semaphore value
         self.semaphores[semaphore_id]['value'] += 1
-        
         # If there are processes waiting on this semaphore, unblock one
         if self.semaphores[semaphore_id]['value'] <= 0 and self.semaphores[semaphore_id]['waiting']:
-            # For FCFS and RR, release the process with the lowest PID
-            if self.scheduling_algorithm in ["FCFS", "RR"]:
-                # Sort the waiting queue by PID
+            # Select the appropriate process to unblock based on the scheduling algorithm
+            if self.scheduling_algorithm == "Priority":
+                waiting_queue = sorted(self.semaphores[semaphore_id]['waiting'], key=lambda x: x.priority)
+            else:  # FCFS or RR
                 waiting_queue = sorted(self.semaphores[semaphore_id]['waiting'], key=lambda x: x.pid)
-                process_to_release = waiting_queue[0]
-                
-                # Remove the process from the semaphore's waiting queue
-                self.semaphores[semaphore_id]['waiting'].remove(process_to_release)
-                
-                # Clear the blocked status
-                process_to_release.blocked_by = None
-                process_to_release.blocked_type = None
-                
-               
+
+            process_to_release = waiting_queue[0]
+
+            # Remove the process from the semaphore's waiting queue
+            self.semaphores[semaphore_id]['waiting'].remove(process_to_release)
+
+            # Clear the blocked status
+            process_to_release.blocked_by = None
+            process_to_release.blocked_type = None
+
+            if process_to_release not in self.ready_queue:
                 self.ready_queue.append(process_to_release)
-        
+
+            # Preempt current running process if Priority scheduling and needed
+            if self.scheduling_algorithm == "Priority":
+                if self.running != self.idle_pcb and self.running.priority > process_to_release.priority:
+                    self.ready_queue.append(self.running)
+                    self.running = self.choose_next_process()
+
         return self.running.pid
 
     # This method is triggered when the currently running process requests to initialize a new mutex.
@@ -290,29 +305,36 @@ class Kernel:
         if self.mutexes[mutex_id]['owner'] == self.running.pid:
             # If there are processes waiting on this mutex, unblock one
             if self.mutexes[mutex_id]['waiting']:
-                # For FCFS and RR, release the process with the lowest PID
-                if self.scheduling_algorithm in ["FCFS", "RR"]:
-                    # Sort the waiting queue by PID
+                if self.scheduling_algorithm == "Priority":
+                    waiting_queue = sorted(self.mutexes[mutex_id]['waiting'], key=lambda x: x.priority)
+                else:  # FCFS or RR
                     waiting_queue = sorted(self.mutexes[mutex_id]['waiting'], key=lambda x: x.pid)
-                    process_to_release = waiting_queue[0]
-                    
-                    # Remove the process from the mutex's waiting queue
-                    self.mutexes[mutex_id]['waiting'].remove(process_to_release)
-                    
-                    # Clear the blocked status
-                    process_to_release.blocked_by = None
-                    process_to_release.blocked_type = None
-                    
-                    # Set the new owner of the mutex
-                    self.mutexes[mutex_id]['owner'] = process_to_release.pid
-                    
-                    # Add the process to the ready queue 
+
+                process_to_release = waiting_queue[0]
+
+                # Remove the process from the mutex's waiting queue
+                self.mutexes[mutex_id]['waiting'].remove(process_to_release)
+
+                # Clear the blocked status
+                process_to_release.blocked_by = None
+                process_to_release.blocked_type = None
+
+                # set the new owner of the mutex
+                self.mutexes[mutex_id]['owner'] = process_to_release.pid
+
+                if process_to_release not in self.ready_queue:
                     self.ready_queue.append(process_to_release)
+
+                # Preempt if priority is higher
+                if self.scheduling_algorithm == "Priority":
+                    if self.running != self.idle_pcb and self.running.priority > process_to_release.priority:
+                        self.ready_queue.append(self.running)
+                        self.running = self.choose_next_process()
             else:
                 # If no processes are waiting, unlock the mutex
                 self.mutexes[mutex_id]['locked'] = False
                 self.mutexes[mutex_id]['owner'] = None
-        
+                
         return self.running.pid
 
     # This function represents the hardware timer interrupt.

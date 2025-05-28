@@ -361,6 +361,9 @@ class Kernel:
                 # Reset the process start time
                 self.process_start_time = self.current_time
         if self.scheduling_algorithm == "Multilevel":
+            if self.running == self.idle_pcb and not self.foreground_queue and not self.background_queue:
+                self.level_timer = 0
+                return self.running.pid
             if self.running.process_type == "Foreground":
                 self.running.remaining_quantum -=10
             time_used = self.current_time - self.process_start_time

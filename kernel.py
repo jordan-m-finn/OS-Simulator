@@ -193,7 +193,7 @@ class Kernel:
             # For Round Robin, simply take the next process from the ready queue
             return self.ready_queue.popleft()
 
-        return self.running
+        return self.ready_queue.popleft() if self.ready_queue else self.idle_pcb
     
     # The following are new methods that the simulator will call for the new simulations (i.e. for project 1). 
     # You will notice that some of them do not return a PID and thus can not cause a context switch.
@@ -211,24 +211,25 @@ class Kernel:
     # This method is triggered when the currently running process calls p() on an existing semaphore.
     # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_semaphore_p(self, semaphore_id: int) -> PID:
-        # Decrement the semaphore value
         self.semaphores[semaphore_id]['value'] -= 1
-        
-        # If the semaphore value is negative, block the process
+
         if self.semaphores[semaphore_id]['value'] < 0:
-            # Save the current process
-            current_process = self.running
-            current_process.blocked_by = semaphore_id
-            current_process.blocked_type = 'semaphore'
-            
-            # Add the process to the semaphore's waiting queue
-            self.semaphores[semaphore_id]['waiting'].append(current_process)
-            
-            # Choose the next process to run
+            # Block current process
+            blocked_process = self.running
+            blocked_process.blocked_by = semaphore_id
+            blocked_process.blocked_type = 'semaphore'
+            self.semaphores[semaphore_id]['waiting'].append(blocked_process)
+
+            # Perform context switch
             self.running = self.choose_next_process()
+
+            # If no ready process, switch to idle
+            if self.running == blocked_process:
+                self.running = self.idle_pcb
+
             if self.scheduling_algorithm == "RR":
                 self.process_start_time = self.current_time
-        
+
         return self.running.pid
 
     # This method is triggered when the currently running process calls v() on an existing semaphore.

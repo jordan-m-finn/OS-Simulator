@@ -402,3 +402,20 @@ class Kernel:
                 self.running = self.choose_next_process()
                 self.process_start_time = self.current_time
         return self.running.pid
+
+# This class represents the MMU of the simulation.
+# The simulator will create an instance of this object and use it to translate memory accesses.
+# DO NOT modify the name of this class or remove it.
+class MMU:
+	# Called before the simulation begins (even before kernel __init__).
+	# Use this function to initialize any variables you need throughout the simulation.
+	# DO NOT rename or delete this method. DO NOT change its arguments.
+    def __init__(self, logger):
+        pass
+
+	# Translate the virtual address to its physical address.
+	# If it is not a valid address for the given process, return None which will cause a segmentation fault.
+	# If it is valid, translate the given virtual address to its physical address.
+	# DO NOT rename or delete this method. DO NOT change its arguments.
+    def translate(self, address: int, pid: PID) -> int | None:
+    	return None

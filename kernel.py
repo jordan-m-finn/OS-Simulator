@@ -42,6 +42,8 @@ class Kernel:
         self.idle_pcb = PCB(0)
         self.running = self.idle_pcb
         self.logger = logger
+        self.mmu = mmu
+        self.memory_size = memory_size
         
         # Initialize data structures for mutexes and semaphores
         self.mutexes = {}  # Dictionary to store mutex information: {mutex_id: {'locked': bool, 'owner': PID, 'waiting': deque}}
@@ -59,6 +61,7 @@ class Kernel:
         self.level_timer = 0
 
         self.pcbs= {}
+        self.mmu.free_segments = [(self.mmu.reserved, self.memory_size - self.mmu.reserved)]
 
     # This method is triggered every time a new process has arrived.
     # new_process is this process's PID.
@@ -68,6 +71,11 @@ class Kernel:
     def new_process_arrived(self, new_process: PID, priority: int, process_type: str, memory_needed:int) -> PID:
         pcb = PCB(new_process, priority=priority, process_type=process_type)
         self.pcbs[new_process] = pcb
+        allocation_result = self.mmu.allocate_memory(new_process, memory_needed)
+        if allocation_result == -1:
+            self.logger.log("Unable to allocate memory for new process. Dropping process.")
+            return self.running.pid
+        
         if self.scheduling_algorithm=="Multilevel":
             if process_type == "Foreground":
                 #uses RR scheduling algorithm
@@ -80,7 +88,7 @@ class Kernel:
                     return pcb.pid
                 else:
                     self.foreground_queue.append(pcb)
-                    print("Self.running.pid is returned: ", self.running.pid)
+                    #print("Self.running.pid is returned: ", self.running.pid)
                     return self.running.pid
             else:
                 if self.running is self.idle_pcb:
@@ -126,6 +134,8 @@ class Kernel:
     # DO NOT rename or delete this method. DO NOT change its arguments.
     def syscall_exit(self) -> PID:
         exited = self.running
+        #self.logger.log(f"[Kernel] Process {exited.pid} is exiting. Freeing its memory.")
+        self.mmu.free_memory(exited.pid)
         self.running = self.idle_pcb
 
         # Clean up: remove exited process from any queues just in case
@@ -148,7 +158,7 @@ class Kernel:
         if self.scheduling_algorithm == "RR" or self.scheduling_algorithm == "Multilevel":
             self.process_start_time = self.current_time
 
-
+        
         return self.running.pid
 
     # This method is triggered when the currently running process requests to change its priority.
@@ -168,6 +178,8 @@ class Kernel:
     # Feel free to modify this method as you see fit.
     # It is not required to actually use this method but it is recommended.
     def choose_next_process(self):
+        if self.all_processes_finished():
+            return self.idle_pcb
         if self.scheduling_algorithm == "Multilevel":
             if self.current_level == "Foreground":
                 if len(self.foreground_queue) > 0:
@@ -343,6 +355,16 @@ class Kernel:
     # Do not use real time to track how much time has passed as time is simulated.
     # DO NOT rename or delete this method. DO NOT change its arguments.
     def timer_interrupt(self) -> PID:
+        if self.all_processes_finished():
+            if not hasattr(self, "_idle_ticks"):
+                self._idle_ticks = 0
+            self._idle_ticks += 1
+
+            if self._idle_ticks >= 50_000:  # 500ms simulated time
+                #self.logger.log("Force ending simulation early to prevent idle timeout.")
+                exit(0)  # Safe shutdown
+
+            return self.idle_pcb.pid
         # Update the current time
         self.current_time += 10  # Timer interrupt occurs every 10 microseconds
         #self.logger.log("Timer interrupt")
@@ -402,7 +424,14 @@ class Kernel:
                 self.running = self.choose_next_process()
                 self.process_start_time = self.current_time
         return self.running.pid
-
+    def all_processes_finished(self):
+        return (
+            self.running == self.idle_pcb and
+            not self.foreground_queue and
+            not self.background_queue and
+            not self.ready_queue
+        )
+ 
 # This class represents the MMU of the simulation.
 # The simulator will create an instance of this object and use it to translate memory accesses.
 # DO NOT modify the name of this class or remove it.
@@ -411,11 +440,62 @@ class MMU:
 	# Use this function to initialize any variables you need throughout the simulation.
 	# DO NOT rename or delete this method. DO NOT change its arguments.
     def __init__(self, logger):
-        pass
+        self.logger = logger
+        self.reserved = 10*1024*1024
+        self.free_segments = []
+        self.allocations = {} #pid -> (start_address, size)
+
 
 	# Translate the virtual address to its physical address.
 	# If it is not a valid address for the given process, return None which will cause a segmentation fault.
 	# If it is valid, translate the given virtual address to its physical address.
 	# DO NOT rename or delete this method. DO NOT change its arguments.
     def translate(self, address: int, pid: PID) -> int | None:
-    	return None
+        base_virtual = 0x20000000
+        if pid not in self.allocations:
+            return None
+        
+        phys_base, size = self.allocations[pid]
+        if address < base_virtual or address >= base_virtual + size:
+            return None
+        
+        offset = address - base_virtual
+        return phys_base + offset
+
+    def allocate_memory(self, pid, size):
+        best_fit = None
+        for seg in self.free_segments:
+            if seg[1] >= size:
+                if not best_fit or seg[1] < best_fit[1] or (seg[1] == best_fit[1] and seg[0] < best_fit[0]):
+                    best_fit = seg
+
+        if not best_fit:
+            return -1  # No suitable hole
+
+        start, seg_size = best_fit
+        self.free_segments.remove(best_fit)
+
+        if seg_size > size:
+            self.free_segments.append((start + size, seg_size - size))
+
+        self.allocations[pid] = (start, size)
+        self._merge_free_segments()
+
+        return start
+    def free_memory(self, pid):
+        if pid not in self.allocations:
+            return
+        start, size = self.allocations.pop(pid)
+        self.free_segments.append((start, size))
+        self._merge_free_segments()
+        #self.logger.log(f"[MMU] Freed {size} bytes from PID {pid} starting at address {start}")
+
+    def _merge_free_segments(self):
+        self.free_segments.sort()
+        merged = []
+        for start, size in self.free_segments:
+            if merged and merged[-1][0] + merged[-1][1] == start:
+                merged[-1] = (merged[-1][0], merged[-1][1] + size)
+            else:
+                merged.append((start, size))
+        self.free_segments = merged

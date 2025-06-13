@@ -45,6 +45,9 @@ class Kernel:
         self.mmu = mmu
         self.memory_size = memory_size
         
+        # Initialize the MMU's free segments with the correct memory size
+        self.mmu.free_segments = [(self.mmu.reserved, memory_size - self.mmu.reserved)]
+        
         # Initialize data structures for mutexes and semaphores
         self.mutexes = {}  # Dictionary to store mutex information: {mutex_id: {'locked': bool, 'owner': PID, 'waiting': deque}}
         self.semaphores = {}  # Dictionary to store semaphore information: {semaphore_id: {'value': int, 'waiting': deque}}
@@ -73,8 +76,8 @@ class Kernel:
         self.pcbs[new_process] = pcb
         allocation_result = self.mmu.allocate_memory(new_process, memory_needed)
         if allocation_result == -1:
-            self.logger.log("Unable to allocate memory for new process. Dropping process.")
-            return self.running.pid
+            # Let the simulator handle the logging
+            return -1  # Return -1 to indicate allocation failure
         
         if self.scheduling_algorithm=="Multilevel":
             if process_type == "Foreground":
@@ -442,7 +445,8 @@ class MMU:
     def __init__(self, logger):
         self.logger = logger
         self.reserved = 10*1024*1024
-        self.free_segments = []
+        # Initialize with one free segment representing all available memory (after reserved)
+        self.free_segments = [(self.reserved, 1000*1024*1024 - self.reserved)]  # Default to 1000MB total
         self.allocations = {} #pid -> (start_address, size)
 
 
